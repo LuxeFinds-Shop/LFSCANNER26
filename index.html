@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>LuxeFinds Scanner</title>
+
+  <meta name="theme-color" content="#000000">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="manifest" href="data:application/manifest+json,{
+    \"name\": \"LuxeFinds Scanner\",
+    \"short_name\": \"LF Scanner\",
+    \"start_url\": \".\",
+    \"display\": \"standalone\",
+    \"background_color\": \"#000\",
+    \"theme_color\": \"#000\"
+  }">
+
+  <style>
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { font-family: system-ui, sans-serif; background: #000; color: #fff; height: 100vh; overflow: hidden; touch-action: manipulation; }
+    #container { position: relative; width: 100%; height: 100%; }
+    #reader { position: absolute; inset: 0; width: 100%; height: 100%; }
+    #overlay { position: absolute; inset: 0; background: rgba(0,0,0,0.6); pointer-events: none; z-index: 2; }
+    #viewfinder { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 90vw; max-width: 500px; aspect-ratio: 4 / 2.5; border: 4px solid #00ff9d; border-radius: 20px; box-shadow: 0 0 0 9999px rgba(0,0,0,0.65); pointer-events: none; z-index: 3; }
+    #status { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.7); backdrop-filter: blur(10px); padding: 10px 25px; border-radius: 50px; font-size: 1rem; z-index: 5; }
+    #success { position: absolute; inset: 0; background: rgba(0,255,100,0.25); display: flex; align-items: center; justify-content: center; font-size: 2.5rem; font-weight: bold; color: #00ff64; opacity: 0; transition: opacity 0.5s; pointer-events: none; z-index: 10; }
+    #success.show { opacity: 1; }
+    #choice { position: fixed; bottom: 100px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.8); backdrop-filter: blur(12px); padding: 20px; border-radius: 24px; font-size: 1.2rem; z-index: 15; display: none; text-align: center; }
+    #choice button { margin: 10px 15px; padding: 12px 30px; font-size: 1.1rem; border: none; border-radius: 50px; cursor: pointer; }
+    #choice .yes { background: #00ff9d; color: black; }
+    #choice .no { background: #ff4d4d; color: white; }
+    #history { position: fixed; bottom: 0; left: 0; right: 0; background: rgba(0,0,0,0.9); backdrop-filter: blur(10px); padding: 15px; font-size: 1rem; z-index: 5; overflow-y: auto; max-height: 40vh; }
+    #history ul { list-style: none; }
+    #history li { margin: 5px 0; }
+    #total { font-weight: bold; margin-top: 10px; }
+    #reset { background: #ff4d4d; color: white; padding: 8px 16px; border: none; border-radius: 30px; font-size: 0.9rem; cursor: pointer; margin-top: 10px; float: right; }
+  </style>
+</head>
+<body>
+
+  <div id="container">
+    <div id="reader"></div>
+    <div id="overlay"></div>
+    <div id="viewfinder"></div>
+
+    <div id="status">Scan läuft – Barcode zentrieren</div>
+    <div id="success">Erfolgreich gescannt</div>
+
+    <div id="choice">
+      <div>Weiter scannen?</div>
+      <button class="yes" onclick="continueScan()">Ja</button>
+      <button class="no" onclick="stopScan()">Stoppen</button>
+    </div>
+
+    <div id="history">
+      <ul id="scan-list"></ul>
+      <div id="total">Gesamt: 0 CHF</div>
+      <button id="reset" onclick="resetScans()">Reset</button>
+    </div>
+  </div>
+
+  <audio id="beep" preload="auto">
+    <source src="https://cdn.pixabay.com/audio/2022/03/24/audio_8d7b0d4d0a.mp3" type="audio/mpeg">
+  </audio>
+
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  <script>
+    const html5QrCode = new Html5Qrcode("reader");
+    const beep = document.getElementById("beep");
+    const status = document.getElementById("status");
+    const success = document.getElementById("success");
+    const choice = document.getElementById("choice");
+    const scanList = document.getElementById("scan-list");
+    const total = document.getElementById("total");
+    let scanning = false;
+    let scans = JSON.parse(localStorage.getItem('scans') || '[]');
+    const PREIS = 34.5;
+    const WEBHOOK = "https://discord.com/api/webhooks/1470520011096592415/QSAAy7JK_v83ymk8KlY2p8F5pjgnnSo5EQCFGv209KZN4sQNRqkRL-H6VzimoXfgMG_5";
+
+    function sendToDiscord(code) {
+      fetch(WEBHOOK, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          content: `**Robin – Neuer Verkauf:** \`${code}\` um ${new Date().toLocaleString('de-DE')} (Affiliate-Scan)`
+        })
+      }).catch(() => {});
+    }
+
+    function updateHistory() {
+      scanList.innerHTML = '';
+      scans.forEach((code, i) => {
+        const li = document.createElement('li');
+        li.textContent = `#${i+1}: ${code} (${PREIS.toFixed(2)} CHF)`;
+        scanList.appendChild(li);
+      });
+      const gesamt = scans.length * PREIS;
+      total.textContent = `Kosten: ${scans.length} x ${PREIS.toFixed(2)} CHF = ${gesamt.toFixed(2)} CHF`;
+      localStorage.setItem('scans', JSON.stringify(scans));
+    }
+
+    function resetScans() {
+      scans = [];
+      updateHistory();
+    }
+
+    function showChoice() {
+      choice.style.display = "block";
+      html5QrCode.pause();
+      scanning = false;
+    }
+
+    function continueScan() {
+      choice.style.display = "none";
+      html5QrCode.resume();
+      scanning = true;
+      status.textContent = "Scan läuft – Barcode zentrieren";
+    }
+
+    function stopScan() {
+      choice.style.display = "none";
+      html5QrCode.stop().then(() => {
+        scanning = false;
+        status.textContent = "Scanner gestoppt";
+      });
+    }
+
+    function onScanSuccess(decodedText) {
+      scans.push(decodedText);
+      updateHistory();
+      success.classList.add("show");
+      beep.play().catch(() => {});
+      navigator.vibrate(300);
+      sendToDiscord(decodedText);
+
+      setTimeout(() => success.classList.remove("show"), 2500);
+      showChoice();
+    }
+
+    const config = {
+      fps: 20,
+      qrbox: { width: 600, height: 350 }, // Groß – scannt aus 30–50 cm
+      aspectRatio: 1.0,
+      showTorchButtonIfSupported: true,
+      formatsToSupport: [Html5QrcodeSupportedFormats.EAN_13, Html5QrcodeSupportedFormats.EAN_8, Html5QrcodeSupportedFormats.UPC_A, Html5QrcodeSupportedFormats.UPC_E]
+    };
+
+    html5QrCode.start({ facingMode: "environment" }, config, onScanSuccess, () => {}).then(() => {
+      scanning = true;
+      status.textContent = "Scan läuft – Barcode zentrieren";
+      updateHistory();
+    }).catch(err => {
+      status.textContent = "Fehler: " + err.message;
+    });
+  </script>
+</body>
+</html>
